@@ -1,0 +1,25 @@
+{
+  "name": "revenant-killboard",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "canvas": "^3.1.2",
+    "discord.js": "^14.21.0",
+    "dotenv": "^17.2.1",
+    "fuse.js": "^7.1.0",
+    "moment-timezone": "^0.6.0",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
