@@ -46,8 +46,8 @@ const client = new Client({
 
 // Initialize components
 const db = new Database();
-let itemList = [];
-let fuse;
+// let itemList = [];
+// let fuse;
 let albionCommands;
 
 // Load items database
@@ -186,7 +186,7 @@ async function registerCommands() {
 // Bot ready event
 client.once('ready', async () => {
     console.log(`🤖 Bot ready! Logged in as ${client.user.tag}`);
-    await initializeItems();
+    // await initializeItems();
     await registerCommands();
     console.log('✅ All systems operational!');
 });
@@ -198,7 +198,39 @@ client.on('interactionCreate', async interaction => {
     try {
         // Albion Online Commands
         if (interaction.commandName === 'price') {
-            await albionCommands.handlePrice(interaction);
+            const itemQuery = interaction.options.getString('item');
+            await interaction.deferReply();
+            
+            try {
+                // Try direct API call with the search term
+                const prices = await getItemPrices(itemQuery);
+                
+                if (prices.length > 0) {
+                    const embed = createPriceEmbed(itemQuery, prices);
+                    await interaction.editReply({ embeds: [embed] });
+                } else {
+                    // Try with common item patterns if direct search fails
+                    const commonPatterns = generateItemPatterns(itemQuery);
+                    let found = false;
+                    
+                    for (const pattern of commonPatterns) {
+                        const patternPrices = await getItemPrices(pattern);
+                        if (patternPrices.length > 0) {
+                            const embed = createPriceEmbed(pattern, patternPrices);
+                            await interaction.editReply({ embeds: [embed] });
+                            found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!found) {
+                        await interaction.editReply(`No price data found for "${itemQuery}". Try using the exact item name or item ID (e.g., "T4_SWORD" or "Adept's Broadsword").`);
+                    }
+                }
+            } catch (error) {
+                console.error('Price command error:', error);
+                await interaction.editReply('Error fetching price data');
+            }
         }
         else if (interaction.commandName === 'player') {
             await albionCommands.handlePlayer(interaction);
@@ -740,6 +772,95 @@ async function handleServerStatus(interaction) {
         console.error('Server status error:', error);
         await interaction.editReply('Error checking server status');
     }
+}
+// Generate common item ID patterns based on search term
+function generateItemPatterns(searchTerm) {
+    const term = searchTerm.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const patterns = [];
+    
+    // Common item patterns
+    const tiers = ['T3', 'T4', 'T5', 'T6', 'T7', 'T8'];
+    const enchantments = ['', '@1', '@2', '@3'];
+    
+    // Try exact term first
+    patterns.push(searchTerm);
+    
+    // Try with tier prefixes for common items
+    if (term.includes('sword')) {
+        tiers.forEach(tier => {
+            enchantments.forEach(ench => {
+                patterns.push(`${tier}_SWORD${ench}`);
+                patterns.push(`${tier}_2H_SWORD${ench}`);
+            });
+        });
+    }
+    
+    if (term.includes('planks') || term.includes('chestnut')) {
+        patterns.push('T3_PLANKS_LEVEL1@1'); // Chestnut Planks
+        patterns.push('T4_PLANKS_LEVEL1@1'); // Pine Planks
+        patterns.push('T5_PLANKS_LEVEL1@1'); // Cedar Planks
+    }
+    
+    if (term.includes('bow')) {
+        tiers.forEach(tier => {
+            enchantments.forEach(ench => {
+                patterns.push(`${tier}_BOW${ench}`);
+            });
+        });
+    }
+    
+    if (term.includes('leather') || term.includes('hide')) {
+        tiers.forEach(tier => {
+            patterns.push(`${tier}_LEATHER_LEVEL1@1`);
+            patterns.push(`${tier}_HIDE_LEVEL1@1`);
+        });
+    }
+    
+    // Add more common patterns as needed
+    return patterns;
+}
+
+// Simplified price fetching
+async function getItemPrices(itemId, locations = ['Caerleon', 'Bridgewatch', 'Lymhurst', 'Martlock', 'Thetford', 'Fort Sterling']) {
+    try {
+        const locationStr = locations.join(',');
+        const response = await axios.get(`https://www.albion-online-data.com/api/v2/stats/prices/${itemId}?locations=${locationStr}`);
+        return response.data || [];
+    } catch (error) {
+        console.error(`Error fetching prices for ${itemId}:`, error.message);
+        return [];
+    }
+}
+
+// Simplified price embed
+function createPriceEmbed(itemName, prices) {
+    const embed = new EmbedBuilder()
+        .setTitle(`💰 ${itemName} Prices`)
+        .setColor(0x0099ff)
+        .setTimestamp();
+
+    if (prices.length === 0) {
+        embed.setDescription('No recent price data available');
+        return embed;
+    }
+
+    const sortedPrices = prices
+        .filter(p => p.sell_price_min > 0)
+        .sort((a, b) => a.sell_price_min - b.sell_price_min);
+
+    if (sortedPrices.length > 0) {
+        const fields = sortedPrices.slice(0, 6).map(price => ({
+            name: price.city,
+            value: `Sell: ${price.sell_price_min.toLocaleString()}\nBuy: ${price.buy_price_max.toLocaleString()}\nUpdated: <t:${Math.floor(new Date(price.sell_price_min_date).getTime() / 1000)}:R>`,
+            inline: true
+        }));
+        
+        embed.addFields(fields);
+    } else {
+        embed.setDescription('No current market orders found');
+    }
+
+    return embed;
 }
 
 // Graceful shutdown
