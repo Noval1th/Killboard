@@ -14,6 +14,20 @@ try {
 }
 console.log('=== END DEBUG ===');
 
+// DEBUG: Check database.js content
+try {
+    const fs = require('fs');
+    const dbContent = fs.readFileSync('./database.js', 'utf8');
+    console.log('database.js file size:', dbContent.length);
+    console.log('database.js first 200 characters:', dbContent.substring(0, 200));
+    console.log('Contains "class Database":', dbContent.includes('class Database'));
+    console.log('Contains "module.exports":', dbContent.includes('module.exports'));
+} catch (err) {
+    console.log('Error reading database.js:', err.message);
+}
+console.log('=== END DATABASE DEBUG ===');
+
+
 // Rest of your existing code (the axios, discord.js imports, etc.)
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
