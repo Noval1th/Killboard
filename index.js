@@ -1,4 +1,20 @@
 require('dotenv').config();
+
+// DEBUG: Check what files exist on Railway
+const fs = require('fs');
+console.log('=== DEBUGGING FILE STRUCTURE ===');
+console.log('Current directory:', process.cwd());
+console.log('Files in root:', fs.readdirSync('.'));
+
+try {
+    console.log('Files in commands folder:', fs.readdirSync('./commands'));
+    console.log('albion.js exists:', fs.existsSync('./commands/albion.js'));
+} catch (err) {
+    console.log('Commands folder error:', err.message);
+}
+console.log('=== END DEBUG ===');
+
+// Rest of your existing code (the axios, discord.js imports, etc.)
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 const Fuse = require('fuse.js');
