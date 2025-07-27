@@ -8,7 +8,7 @@ class Database {
 
     init() {
         this.db.serialize(() => {
-            // Kill events
+            // Kill events table
             this.db.run(`
                 CREATE TABLE IF NOT EXISTS kill_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,24 +25,13 @@ class Database {
                 )
             `);
 
-            // Guild members
+            // Guild members cache
             this.db.run(`
                 CREATE TABLE IF NOT EXISTS guild_members (
                     id TEXT PRIMARY KEY,
                     name TEXT,
                     guild_id TEXT,
                     last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-
-            // Items cache
-            this.db.run(`
-                CREATE TABLE IF NOT EXISTS items (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    category TEXT,
-                    tier INTEGER,
-                    enchantment INTEGER DEFAULT 0
                 )
             `);
 
@@ -57,7 +46,7 @@ class Database {
                 )
             `);
 
-            // Tracked entities
+            // Tracked entities (players/guilds to monitor)
             this.db.run(`
                 CREATE TABLE IF NOT EXISTS tracked_entities (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,7 +87,6 @@ class Database {
     updateServerSettings(guildId, settings) {
         return new Promise((resolve, reject) => {
             const keys = Object.keys(settings);
-            const setClause = keys.map(key => `${key} = ?`).join(', ');
             const values = keys.map(key => settings[key]);
             
             this.db.run(`
@@ -174,6 +162,7 @@ class Database {
                 if (err) reject(err);
                 else resolve(this.lastID);
             });
+            stmt.finalize();
         });
     }
 
@@ -211,7 +200,7 @@ class Database {
         });
     }
 
-    // Previous methods (kill events, items, etc.)
+    // Kill event methods
     saveKillEvent(event, guildMemberName, isKill) {
         return new Promise((resolve, reject) => {
             const stmt = this.db.prepare(`
@@ -225,6 +214,7 @@ class Database {
                 event.Victim?.Id, event.TotalVictimKillFame, event.TimeStamp,
                 guildMemberName, isKill
             ], function(err) {
+                stmt.finalize();
                 if (err) reject(err);
                 else resolve(this.changes > 0);
             });
@@ -245,30 +235,16 @@ class Database {
         });
     }
 
-    insertItems(items) {
+    updateGuildMembers(members) {
         const stmt = this.db.prepare(`
-            INSERT OR REPLACE INTO items (id, name, category, tier, enchantment)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO guild_members (id, name, guild_id, last_updated)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         `);
         
-        items.forEach(item => {
-            stmt.run([item.id, item.name, item.category, item.tier, item.enchantment]);
+        members.forEach(member => {
+            stmt.run([member.Id, member.Name, member.GuildId]);
         });
         stmt.finalize();
-    }
-
-    searchItems(query) {
-        return new Promise((resolve, reject) => {
-            this.db.all(`
-                SELECT * FROM items 
-                WHERE name LIKE ? 
-                ORDER BY tier ASC, enchantment ASC
-                LIMIT 20
-            `, [`%${query}%`], (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
     }
 
     close() {

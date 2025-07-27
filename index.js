@@ -1,41 +1,11 @@
 require('dotenv').config();
-
-// DEBUG: Check what files exist on Railway
-const fs = require('fs');
-console.log('=== DEBUGGING FILE STRUCTURE ===');
-console.log('Current directory:', process.cwd());
-console.log('Files in root:', fs.readdirSync('.'));
-
-try {
-    console.log('Files in commands folder:', fs.readdirSync('./commands'));
-    console.log('albion.js exists:', fs.existsSync('./commands/albion.js'));
-} catch (err) {
-    console.log('Commands folder error:', err.message);
-}
-console.log('=== END DEBUG ===');
-
-// DEBUG: Check database.js content
-try {
-    const fs = require('fs');
-    const dbContent = fs.readFileSync('./database.js', 'utf8');
-    console.log('database.js file size:', dbContent.length);
-    console.log('database.js first 200 characters:', dbContent.substring(0, 200));
-    console.log('Contains "class Database":', dbContent.includes('class Database'));
-    console.log('Contains "module.exports":', dbContent.includes('module.exports'));
-} catch (err) {
-    console.log('Error reading database.js:', err.message);
-}
-console.log('=== END DATABASE DEBUG ===');
-
-
-// Rest of your existing code (the axios, discord.js imports, etc.)
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder } = require('discord.js');
 const axios = require('axios');
-const Fuse = require('fuse.js');
 const moment = require('moment-timezone');
 const Database = require('./database');
 const AlbionCommands = require('./commands/albion');
 
+// Initialize Discord client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -44,132 +14,392 @@ const client = new Client({
     ]
 });
 
+// Configuration
+const ALBION_API_BASE = 'https://gameinfo.albiononline.com/api/gameinfo';
+const GUILD_ID = process.env.GUILD_ID;
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL) || 30000;
+
 // Initialize components
 const db = new Database();
-// let itemList = [];
-// let fuse;
 let albionCommands;
 
-// Load items database
-async function initializeItems() {
-    try {
-        console.log('Loading item database...');
-        const response = await axios.get('https://raw.githubusercontent.com/broderickhyman/ao-bin-dumps/master/formatted/items.txt');
-        const itemLines = response.data.split('\n');
-        
-        itemList = itemLines
-            .filter(line => line.trim() && !line.startsWith('//'))
-            .map(line => {
-                const parts = line.split(':');
-                if (parts.length >= 2) {
-                    const id = parts[0].trim();
-                    const name = parts[1].trim();
-                    const tierMatch = id.match(/T(\d+)/);
-                    const enchantMatch = id.match(/@(\d+)/);
-                    
-                    return {
-                        id, name,
-                        category: id.split('_')[1] || 'unknown',
-                        tier: tierMatch ? parseInt(tierMatch[1]) : 0,
-                        enchantment: enchantMatch ? parseInt(enchantMatch[1]) : 0
-                    };
-                }
-                return null;
-            })
-            .filter(Boolean);
+// Store processed events to avoid duplicates
+const processedEvents = new Set();
+let lastCheckTime = Date.now();
 
-        db.insertItems(itemList);
-        fuse = new Fuse(itemList, { keys: ['name'], threshold: 0.4, includeScore: true });
-        albionCommands = new AlbionCommands(db, fuse, itemList);
+// Get guild members and update database
+async function getGuildMembers() {
+    try {
+        const response = await axios.get(`${ALBION_API_BASE}/guilds/${GUILD_ID}`);
+        const guildData = response.data;
         
-        console.log(`Loaded ${itemList.length} items`);
+        if (guildData.members) {
+            db.updateGuildMembers(guildData.members);
+        }
+        
+        return guildData.members || [];
     } catch (error) {
-        console.error('Error loading items:', error.message);
+        console.error('Error fetching guild members:', error.message);
+        return [];
+    }
+}
+
+// Get recent events for a player
+async function getPlayerEvents(playerId, limit = 10) {
+    try {
+        const response = await axios.get(`${ALBION_API_BASE}/players/${playerId}/events?limit=${limit}&offset=0`);
+        return response.data || [];
+    } catch (error) {
+        console.error(`Error fetching events for player ${playerId}:`, error.message);
+        return [];
+    }
+}
+
+// Format item power
+function formatItemPower(equipment) {
+    if (!equipment) return 0;
+    
+    let totalIP = 0;
+    Object.values(equipment).forEach(item => {
+        if (item && item.Quality) {
+            totalIP += item.Quality;
+        }
+    });
+    return totalIP;
+}
+
+// Create kill embed
+function createKillEmbed(event, isKill = true) {
+    const killer = event.Killer;
+    const victim = event.Victim;
+    
+    const embed = new EmbedBuilder()
+        .setTimestamp(new Date(event.TimeStamp))
+        .setFooter({ text: 'Albion Online' });
+
+    if (isKill) {
+        embed
+            .setTitle('🗡️ Guild Member Kill!')
+            .setColor(0x00ff00)
+            .setDescription(`**${killer.Name}** killed **${victim.Name}**`)
+            .addFields(
+                { name: 'Killer', value: `${killer.Name}\nIP: ${formatItemPower(killer.Equipment)}`, inline: true },
+                { name: 'Victim', value: `${victim.Name}\nIP: ${formatItemPower(victim.Equipment)}`, inline: true },
+                { name: 'Fame', value: `${event.TotalVictimKillFame.toLocaleString()}`, inline: true }
+            );
+    } else {
+        embed
+            .setTitle('💀 Guild Member Death')
+            .setColor(0xff0000)
+            .setDescription(`**${victim.Name}** was killed by **${killer.Name}**`)
+            .addFields(
+                { name: 'Victim', value: `${victim.Name}\nIP: ${formatItemPower(victim.Equipment)}`, inline: true },
+                { name: 'Killer', value: `${killer.Name}\nIP: ${formatItemPower(killer.Equipment)}`, inline: true },
+                { name: 'Fame Lost', value: `${event.TotalVictimKillFame.toLocaleString()}`, inline: true }
+            );
+    }
+
+    return embed;
+}
+
+// Check for new kill/death events
+async function checkForEvents() {
+    try {
+        const members = await getGuildMembers();
+        const channel = client.channels.cache.get(CHANNEL_ID);
+        
+        if (!channel) {
+            console.error('Discord channel not found');
+            return;
+        }
+
+        for (const member of members) {
+            const events = await getPlayerEvents(member.Id, 5);
+            
+            for (const event of events) {
+                const eventTime = new Date(event.TimeStamp).getTime();
+                
+                // Skip old events
+                if (eventTime < lastCheckTime) continue;
+                
+                // Skip already processed events
+                const eventKey = `${event.EventId}_${event.TimeStamp}`;
+                if (processedEvents.has(eventKey)) continue;
+                
+                processedEvents.add(eventKey);
+                
+                // Check if guild member was the killer
+                if (event.Killer && event.Killer.Id === member.Id) {
+                    const embed = createKillEmbed(event, true);
+                    await channel.send({ embeds: [embed] });
+                    await db.saveKillEvent(event, member.Name, true);
+                }
+                
+                // Check if guild member was the victim
+                if (event.Victim && event.Victim.Id === member.Id) {
+                    const embed = createKillEmbed(event, false);
+                    await channel.send({ embeds: [embed] });
+                    await db.saveKillEvent(event, member.Name, false);
+                }
+            }
+            
+            // Small delay to avoid rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        lastCheckTime = Date.now();
+        
+        // Clean up old processed events (keep last 1000)
+        if (processedEvents.size > 1000) {
+            const eventsArray = Array.from(processedEvents);
+            processedEvents.clear();
+            eventsArray.slice(-500).forEach(event => processedEvents.add(event));
+        }
+        
+    } catch (error) {
+        console.error('Error checking for events:', error.message);
     }
 }
 
 // Register all slash commands
 async function registerCommands() {
     const commands = [
-        // Albion Commands
-        new SlashCommandBuilder().setName('price').setDescription('Search for any item price')
-            .addStringOption(option => option.setName('item').setDescription('Item name').setRequired(true)),
+        // Albion Online Commands
+        new SlashCommandBuilder()
+            .setName('price')
+            .setDescription('Search for any item price')
+            .addStringOption(option => 
+                option.setName('item')
+                    .setDescription('Item name (e.g., "Chestnut Planks" or "T4_SWORD")')
+                    .setRequired(true)
+            ),
         
-        new SlashCommandBuilder().setName('player').setDescription('Find any player statistics')
-            .addStringOption(option => option.setName('player').setDescription('Player name').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('player')
+            .setDescription('Find any player statistics')
+            .addStringOption(option => 
+                option.setName('player')
+                    .setDescription('Player name')
+                    .setRequired(true)
+            ),
         
-        new SlashCommandBuilder().setName('guild').setDescription('Find any guild information')
-            .addStringOption(option => option.setName('guild').setDescription('Guild name').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('guild')
+            .setDescription('Find any guild information')
+            .addStringOption(option => 
+                option.setName('guild')
+                    .setDescription('Guild name')
+                    .setRequired(true)
+            ),
         
-        new SlashCommandBuilder().setName('gold').setDescription('Get live price of Gold'),
+        new SlashCommandBuilder()
+            .setName('gold')
+            .setDescription('Get live price of Gold'),
         
-        new SlashCommandBuilder().setName('premium').setDescription('Get live price of in-game premium'),
+        new SlashCommandBuilder()
+            .setName('premium')
+            .setDescription('Get live price of in-game premium'),
         
-        new SlashCommandBuilder().setName('randomator').setDescription('Get a random build with spells'),
+        new SlashCommandBuilder()
+            .setName('randomator')
+            .setDescription('Get a random build with spells'),
         
-        new SlashCommandBuilder().setName('image').setDescription('Provides high quality image of any item')
-            .addStringOption(option => option.setName('item').setDescription('Item name').setRequired(true))
-            .addIntegerOption(option => option.setName('quality').setDescription('Quality (1-5)').setMinValue(1).setMaxValue(5)),
+        new SlashCommandBuilder()
+            .setName('image')
+            .setDescription('Provides high quality image of any item')
+            .addStringOption(option => 
+                option.setName('item')
+                    .setDescription('Item name')
+                    .setRequired(true)
+            )
+            .addIntegerOption(option => 
+                option.setName('quality')
+                    .setDescription('Quality (1-5)')
+                    .setMinValue(1)
+                    .setMaxValue(5)
+            ),
         
-        new SlashCommandBuilder().setName('build').setDescription('Choose a build to display')
-            .addStringOption(option => option.setName('name').setDescription('Build name').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('build')
+            .setDescription('Choose a build to display')
+            .addStringOption(option => 
+                option.setName('name')
+                    .setDescription('Build name')
+                    .setRequired(true)
+            ),
         
-        new SlashCommandBuilder().setName('new-build').setDescription('Creates a new Albion build')
-            .addStringOption(option => option.setName('name').setDescription('Build name').setRequired(true))
-            .addStringOption(option => option.setName('weapon').setDescription('Weapon').setRequired(true))
-            .addStringOption(option => option.setName('helmet').setDescription('Helmet'))
-            .addStringOption(option => option.setName('armor').setDescription('Armor'))
-            .addStringOption(option => option.setName('shoes').setDescription('Shoes'))
-            .addStringOption(option => option.setName('description').setDescription('Build description')),
+        new SlashCommandBuilder()
+            .setName('new-build')
+            .setDescription('Creates a new Albion build')
+            .addStringOption(option => 
+                option.setName('name')
+                    .setDescription('Build name')
+                    .setRequired(true)
+            )
+            .addStringOption(option => 
+                option.setName('weapon')
+                    .setDescription('Weapon')
+                    .setRequired(true)
+            )
+            .addStringOption(option => 
+                option.setName('helmet')
+                    .setDescription('Helmet')
+            )
+            .addStringOption(option => 
+                option.setName('armor')
+                    .setDescription('Armor')
+            )
+            .addStringOption(option => 
+                option.setName('shoes')
+                    .setDescription('Shoes')
+            )
+            .addStringOption(option => 
+                option.setName('description')
+                    .setDescription('Build description')
+            ),
         
-        new SlashCommandBuilder().setName('remove-build').setDescription('Removes an Albion build')
-            .addStringOption(option => option.setName('name').setDescription('Build name').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('remove-build')
+            .setDescription('Removes an Albion build')
+            .addStringOption(option => 
+                option.setName('name')
+                    .setDescription('Build name')
+                    .setRequired(true)
+            ),
 
         // Killboard Commands
-        new SlashCommandBuilder().setName('killboard').setDescription('Killboard management')
-            .addSubcommand(subcommand => subcommand.setName('info').setDescription('Display killboard information'))
-            .addSubcommand(subcommand => subcommand.setName('set-channel').setDescription('Set channel for kills/deaths feed')
-                .addChannelOption(option => option.setName('channel').setDescription('Channel for killboard').setRequired(true)))
-            .addSubcommand(subcommand => subcommand.setName('track').setDescription('Track players or guilds')
-                .addStringOption(option => option.setName('type').setDescription('Type to track').setRequired(true).addChoices(
-                    { name: 'Player', value: 'player' },
-                    { name: 'Guild', value: 'guild' }
-                ))
-                .addStringOption(option => option.setName('name').setDescription('Player or guild name').setRequired(true)))
-            .addSubcommand(subcommand => subcommand.setName('untrack').setDescription('Remove specific trackers')
-                .addStringOption(option => option.setName('name').setDescription('Player or guild name to untrack').setRequired(true)))
-            .addSubcommand(subcommand => subcommand.setName('remove').setDescription('Reset killboard in this server')),
+        new SlashCommandBuilder()
+            .setName('killboard')
+            .setDescription('Killboard management')
+            .addSubcommand(subcommand => 
+                subcommand
+                    .setName('info')
+                    .setDescription('Display killboard information')
+            )
+            .addSubcommand(subcommand => 
+                subcommand
+                    .setName('set-channel')
+                    .setDescription('Set channel for kills/deaths feed')
+                    .addChannelOption(option => 
+                        option.setName('channel')
+                            .setDescription('Channel for killboard')
+                            .setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand => 
+                subcommand
+                    .setName('track')
+                    .setDescription('Track players or guilds')
+                    .addStringOption(option => 
+                        option.setName('type')
+                            .setDescription('Type to track')
+                            .setRequired(true)
+                            .addChoices(
+                                { name: 'Player', value: 'player' },
+                                { name: 'Guild', value: 'guild' }
+                            )
+                    )
+                    .addStringOption(option => 
+                        option.setName('name')
+                            .setDescription('Player or guild name')
+                            .setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand => 
+                subcommand
+                    .setName('untrack')
+                    .setDescription('Remove specific trackers')
+                    .addStringOption(option => 
+                        option.setName('name')
+                            .setDescription('Player or guild name to untrack')
+                            .setRequired(true)
+                    )
+            )
+            .addSubcommand(subcommand => 
+                subcommand
+                    .setName('remove')
+                    .setDescription('Reset killboard in this server')
+            ),
 
-        // Discord Commands
-        new SlashCommandBuilder().setName('avatar').setDescription('Shows user profile picture')
-            .addUserOption(option => option.setName('user').setDescription('User to show avatar for')),
+        // Discord Utility Commands
+        new SlashCommandBuilder()
+            .setName('avatar')
+            .setDescription('Shows user profile picture')
+            .addUserOption(option => 
+                option.setName('user')
+                    .setDescription('User to show avatar for')
+            ),
         
-        new SlashCommandBuilder().setName('user').setDescription('Shows information about a specific user')
-            .addUserOption(option => option.setName('user').setDescription('User to show info for')),
+        new SlashCommandBuilder()
+            .setName('user')
+            .setDescription('Shows information about a specific user')
+            .addUserOption(option => 
+                option.setName('user')
+                    .setDescription('User to show info for')
+            ),
         
-        new SlashCommandBuilder().setName('server').setDescription('Shows information about this server'),
+        new SlashCommandBuilder()
+            .setName('server')
+            .setDescription('Shows information about this server'),
         
-        new SlashCommandBuilder().setName('bot-info').setDescription('Shows bot information'),
+        new SlashCommandBuilder()
+            .setName('bot-info')
+            .setDescription('Shows bot information'),
         
-        new SlashCommandBuilder().setName('8ball').setDescription('Answer questions with random yes/no')
-            .addStringOption(option => option.setName('question').setDescription('Your question').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('8ball')
+            .setDescription('Answer questions with random yes/no')
+            .addStringOption(option => 
+                option.setName('question')
+                    .setDescription('Your question')
+                    .setRequired(true)
+            ),
         
-        new SlashCommandBuilder().setName('random-color').setDescription('Generates a random HEX color'),
+        new SlashCommandBuilder()
+            .setName('random-color')
+            .setDescription('Generates a random HEX color'),
         
-        new SlashCommandBuilder().setName('utc').setDescription('Get the current Albion Online time'),
+        new SlashCommandBuilder()
+            .setName('utc')
+            .setDescription('Get the current Albion Online time'),
         
-        new SlashCommandBuilder().setName('set-language').setDescription('Set bot language for your server')
-            .addStringOption(option => option.setName('language').setDescription('Language code').setRequired(true).addChoices(
-                { name: 'English', value: 'en' },
-                { name: 'Spanish', value: 'es' },
-                { name: 'French', value: 'fr' },
-                { name: 'German', value: 'de' }
-            )),
+        new SlashCommandBuilder()
+            .setName('set-language')
+            .setDescription('Set bot language for your server')
+            .addStringOption(option => 
+                option.setName('language')
+                    .setDescription('Language code')
+                    .setRequired(true)
+                    .addChoices(
+                        { name: 'English', value: 'en' },
+                        { name: 'Spanish', value: 'es' },
+                        { name: 'French', value: 'fr' },
+                        { name: 'German', value: 'de' }
+                    )
+            ),
         
-        new SlashCommandBuilder().setName('set-builder-role').setDescription('Set role to manage builds')
-            .addRoleOption(option => option.setName('role').setDescription('Role for build management').setRequired(true)),
+        new SlashCommandBuilder()
+            .setName('set-builder-role')
+            .setDescription('Set role to manage builds')
+            .addRoleOption(option => 
+                option.setName('role')
+                    .setDescription('Role for build management')
+                    .setRequired(true)
+            ),
         
-        new SlashCommandBuilder().setName('server-status').setDescription('Live Albion Online servers status feed')
+        new SlashCommandBuilder()
+            .setName('server-status')
+            .setDescription('Live Albion Online servers status feed'),
+
+        new SlashCommandBuilder()
+            .setName('stats')
+            .setDescription('Get kill/death stats for a guild member')
+            .addStringOption(option => 
+                option.setName('member')
+                    .setDescription('Guild member name')
+                    .setRequired(true)
+            )
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -177,7 +407,7 @@ async function registerCommands() {
     try {
         console.log('Registering slash commands...');
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('All slash commands registered!');
+        console.log('All slash commands registered successfully!');
     } catch (error) {
         console.error('Error registering commands:', error);
     }
@@ -186,8 +416,22 @@ async function registerCommands() {
 // Bot ready event
 client.once('ready', async () => {
     console.log(`🤖 Bot ready! Logged in as ${client.user.tag}`);
-    // await initializeItems();
+    console.log(`📊 Monitoring guild: ${GUILD_ID}`);
+    console.log(`📢 Posting to channel: ${CHANNEL_ID}`);
+    
+    // Initialize Albion commands
+    albionCommands = new AlbionCommands(db);
+    
+    // Register commands
     await registerCommands();
+    
+    // Start polling for events
+    if (GUILD_ID && CHANNEL_ID) {
+        setInterval(checkForEvents, POLL_INTERVAL);
+        setTimeout(checkForEvents, 5000); // Initial check after 5 seconds
+        console.log(`⚔️ Kill/death monitoring started (${POLL_INTERVAL/1000}s interval)`);
+    }
+    
     console.log('✅ All systems operational!');
 });
 
@@ -198,39 +442,7 @@ client.on('interactionCreate', async interaction => {
     try {
         // Albion Online Commands
         if (interaction.commandName === 'price') {
-            const itemQuery = interaction.options.getString('item');
-            await interaction.deferReply();
-            
-            try {
-                // Try direct API call with the search term
-                const prices = await getItemPrices(itemQuery);
-                
-                if (prices.length > 0) {
-                    const embed = createPriceEmbed(itemQuery, prices);
-                    await interaction.editReply({ embeds: [embed] });
-                } else {
-                    // Try with common item patterns if direct search fails
-                    const commonPatterns = generateItemPatterns(itemQuery);
-                    let found = false;
-                    
-                    for (const pattern of commonPatterns) {
-                        const patternPrices = await getItemPrices(pattern);
-                        if (patternPrices.length > 0) {
-                            const embed = createPriceEmbed(pattern, patternPrices);
-                            await interaction.editReply({ embeds: [embed] });
-                            found = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!found) {
-                        await interaction.editReply(`No price data found for "${itemQuery}". Try using the exact item name or item ID (e.g., "T4_SWORD" or "Adept's Broadsword").`);
-                    }
-                }
-            } catch (error) {
-                console.error('Price command error:', error);
-                await interaction.editReply('Error fetching price data');
-            }
+            await albionCommands.handlePrice(interaction);
         }
         else if (interaction.commandName === 'player') {
             await albionCommands.handlePlayer(interaction);
@@ -242,7 +454,7 @@ client.on('interactionCreate', async interaction => {
             await albionCommands.handleGold(interaction);
         }
         else if (interaction.commandName === 'premium') {
-            await handlePremium(interaction);
+            await albionCommands.handlePremium(interaction);
         }
         else if (interaction.commandName === 'randomator') {
             await albionCommands.handleRandomator(interaction);
@@ -250,6 +462,8 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.commandName === 'image') {
             await albionCommands.handleImage(interaction);
         }
+        
+        // Build Commands
         else if (interaction.commandName === 'build') {
             await handleBuild(interaction);
         }
@@ -259,11 +473,18 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.commandName === 'remove-build') {
             await handleRemoveBuild(interaction);
         }
+        
         // Killboard Commands
         else if (interaction.commandName === 'killboard') {
             await handleKillboard(interaction);
         }
-        // Discord Commands
+        
+        // Stats Command
+        else if (interaction.commandName === 'stats') {
+            await handleStats(interaction);
+        }
+        
+        // Discord Utility Commands
         else if (interaction.commandName === 'avatar') {
             await handleAvatar(interaction);
         }
@@ -294,6 +515,7 @@ client.on('interactionCreate', async interaction => {
         else if (interaction.commandName === 'server-status') {
             await handleServerStatus(interaction);
         }
+        
     } catch (error) {
         console.error('Command error:', error);
         const errorEmbed = new EmbedBuilder()
@@ -309,38 +531,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// Command handlers
-async function handlePremium(interaction) {
-    await interaction.deferReply();
-    
-    try {
-        // Premium is typically tracked as an item in the market
-        const premiumPrices = await albionCommands.getItemPrices('PREMIUM');
-        
-        const embed = new EmbedBuilder()
-            .setTitle('💎 Premium Prices')
-            .setColor(0x9932CC)
-            .setDescription('Current premium subscription prices across markets')
-            .setTimestamp();
-
-        if (premiumPrices.length > 0) {
-            const fields = premiumPrices.slice(0, 6).map(price => ({
-                name: price.city,
-                value: `${price.sell_price_min?.toLocaleString() || 'N/A'} silver`,
-                inline: true
-            }));
-            embed.addFields(fields);
-        } else {
-            embed.setDescription('No premium price data available');
-        }
-
-        await interaction.editReply({ embeds: [embed] });
-    } catch (error) {
-        console.error('Premium command error:', error);
-        await interaction.editReply('Error fetching premium prices');
-    }
-}
-
+// Command handlers for non-Albion commands
 async function handleBuild(interaction) {
     const buildName = interaction.options.getString('name');
     await interaction.deferReply();
@@ -366,10 +557,7 @@ async function handleBuild(interaction) {
                 { name: 'Armor', value: build.armor || 'None', inline: true },
                 { name: 'Shoes', value: build.shoes || 'None', inline: true },
                 { name: 'Off-hand', value: build.off_hand || 'None', inline: true },
-                { name: 'Cape', value: build.cape || 'None', inline: true },
-                { name: 'Mount', value: build.mount || 'None', inline: true },
-                { name: 'Food', value: build.food || 'None', inline: true },
-                { name: 'Potion', value: build.potion || 'None', inline: true }
+                { name: 'Cape', value: build.cape || 'None', inline: true }
             )
             .setFooter({ text: `Created by ${creator.username}` })
             .setTimestamp(new Date(build.created_at));
@@ -501,8 +689,7 @@ async function handleKillboard(interaction) {
         await interaction.deferReply();
 
         try {
-            // Search for the entity
-            const searchResponse = await axios.get(`https://gameinfo.albiononline.com/api/gameinfo/search?q=${name}`);
+            const searchResponse = await axios.get(`${ALBION_API_BASE}/search?q=${name}`);
             const results = type === 'player' ? searchResponse.data.players : searchResponse.data.guilds;
 
             if (!results || results.length === 0) {
@@ -562,7 +749,6 @@ async function handleKillboard(interaction) {
         await interaction.deferReply();
 
         try {
-            // Reset all killboard settings for this server
             await db.updateServerSettings(interaction.guildId, { 
                 killboard_channel: null,
                 language: 'en',
@@ -570,7 +756,6 @@ async function handleKillboard(interaction) {
                 status_channel: null
             });
 
-            // Remove all tracked entities
             const tracked = await db.getTrackedEntities(interaction.guildId);
             for (const entity of tracked) {
                 await db.removeTrackedEntity(interaction.guildId, entity.entity_id);
@@ -586,6 +771,39 @@ async function handleKillboard(interaction) {
             console.error('Remove killboard error:', error);
             await interaction.editReply('Error resetting killboard');
         }
+    }
+}
+
+async function handleStats(interaction) {
+    const memberName = interaction.options.getString('member');
+    await interaction.deferReply();
+    
+    try {
+        const recentKills = await db.getRecentKills(memberName, 10);
+        
+        if (recentKills.length === 0) {
+            await interaction.editReply(`No recent activity found for ${memberName}`);
+            return;
+        }
+        
+        const kills = recentKills.filter(k => k.is_kill).length;
+        const deaths = recentKills.filter(k => !k.is_kill).length;
+        const totalFame = recentKills.reduce((sum, k) => sum + (k.fame || 0), 0);
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`📊 ${memberName} Statistics`)
+            .setColor(0x0099ff)
+            .addFields(
+                { name: 'Recent Kills', value: kills.toString(), inline: true },
+                { name: 'Recent Deaths', value: deaths.toString(), inline: true },
+                { name: 'Total Fame', value: totalFame.toLocaleString(), inline: true }
+            )
+            .setTimestamp();
+        
+        await interaction.editReply({ embeds: [embed] });
+    } catch (error) {
+        console.error('Stats command error:', error);
+        await interaction.editReply('Error fetching statistics');
     }
 }
 
@@ -755,7 +973,6 @@ async function handleServerStatus(interaction) {
     await interaction.deferReply();
 
     try {
-        // Check Albion Online server status
         const statusEmbed = new EmbedBuilder()
             .setTitle('🌐 Albion Online Server Status')
             .setColor(0x00ff00)
@@ -773,103 +990,26 @@ async function handleServerStatus(interaction) {
         await interaction.editReply('Error checking server status');
     }
 }
-// Generate common item ID patterns based on search term
-function generateItemPatterns(searchTerm) {
-    const term = searchTerm.toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const patterns = [];
-    
-    // Common item patterns
-    const tiers = ['T3', 'T4', 'T5', 'T6', 'T7', 'T8'];
-    const enchantments = ['', '@1', '@2', '@3'];
-    
-    // Try exact term first
-    patterns.push(searchTerm);
-    
-    // Try with tier prefixes for common items
-    if (term.includes('sword')) {
-        tiers.forEach(tier => {
-            enchantments.forEach(ench => {
-                patterns.push(`${tier}_SWORD${ench}`);
-                patterns.push(`${tier}_2H_SWORD${ench}`);
-            });
-        });
-    }
-    
-    if (term.includes('planks') || term.includes('chestnut')) {
-        patterns.push('T3_PLANKS_LEVEL1@1'); // Chestnut Planks
-        patterns.push('T4_PLANKS_LEVEL1@1'); // Pine Planks
-        patterns.push('T5_PLANKS_LEVEL1@1'); // Cedar Planks
-    }
-    
-    if (term.includes('bow')) {
-        tiers.forEach(tier => {
-            enchantments.forEach(ench => {
-                patterns.push(`${tier}_BOW${ench}`);
-            });
-        });
-    }
-    
-    if (term.includes('leather') || term.includes('hide')) {
-        tiers.forEach(tier => {
-            patterns.push(`${tier}_LEATHER_LEVEL1@1`);
-            patterns.push(`${tier}_HIDE_LEVEL1@1`);
-        });
-    }
-    
-    // Add more common patterns as needed
-    return patterns;
-}
-
-// Simplified price fetching
-async function getItemPrices(itemId, locations = ['Caerleon', 'Bridgewatch', 'Lymhurst', 'Martlock', 'Thetford', 'Fort Sterling']) {
-    try {
-        const locationStr = locations.join(',');
-        const response = await axios.get(`https://www.albion-online-data.com/api/v2/stats/prices/${itemId}?locations=${locationStr}`);
-        return response.data || [];
-    } catch (error) {
-        console.error(`Error fetching prices for ${itemId}:`, error.message);
-        return [];
-    }
-}
-
-// Simplified price embed
-function createPriceEmbed(itemName, prices) {
-    const embed = new EmbedBuilder()
-        .setTitle(`💰 ${itemName} Prices`)
-        .setColor(0x0099ff)
-        .setTimestamp();
-
-    if (prices.length === 0) {
-        embed.setDescription('No recent price data available');
-        return embed;
-    }
-
-    const sortedPrices = prices
-        .filter(p => p.sell_price_min > 0)
-        .sort((a, b) => a.sell_price_min - b.sell_price_min);
-
-    if (sortedPrices.length > 0) {
-        const fields = sortedPrices.slice(0, 6).map(price => ({
-            name: price.city,
-            value: `Sell: ${price.sell_price_min.toLocaleString()}\nBuy: ${price.buy_price_max.toLocaleString()}\nUpdated: <t:${Math.floor(new Date(price.sell_price_min_date).getTime() / 1000)}:R>`,
-            inline: true
-        }));
-        
-        embed.addFields(fields);
-    } else {
-        embed.setDescription('No current market orders found');
-    }
-
-    return embed;
-}
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-    console.log('Shutting down...');
+    console.log('Shutting down gracefully...');
     db.close();
     client.destroy();
     process.exit(0);
 });
 
-// Login
+process.on('SIGTERM', () => {
+    console.log('Received SIGTERM, shutting down gracefully...');
+    db.close();
+    client.destroy();
+    process.exit(0);
+});
+
+// Unhandled promise rejection
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Login to Discord
 client.login(process.env.DISCORD_TOKEN);
