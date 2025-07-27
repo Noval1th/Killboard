@@ -9,139 +9,143 @@ class AlbionCommands {
     constructor(db) {
         this.db = db;
     }
-
-    // Common Albion Online items database
-    getItemDatabase() {
-        return {
-            // Resources - Wood/Planks
-            'chestnut planks': 'T3_PLANKS_LEVEL1@1',
-            'pine planks': 'T4_PLANKS_LEVEL1@1', 
-            'cedar planks': 'T5_PLANKS_LEVEL1@1',
-            'bloodoak planks': 'T6_PLANKS_LEVEL1@1',
-            'ashenbark planks': 'T7_PLANKS_LEVEL1@1',
-            'elderwood planks': 'T8_PLANKS_LEVEL1@1',
+    generateItemPatterns(searchTerm) {
+        const term = searchTerm.toLowerCase().trim();
+        const patterns = [];
+        
+        // If user already provided an item ID, use it directly
+        if (term.match(/^T[2-8]_/i)) {
+            patterns.push(searchTerm.toUpperCase());
+            return patterns;
+        }
+        
+        // Common item mappings for popular searches
+        const commonMappings = {
+            // Resources
+            'hide': ['T4_HIDE', 'T5_HIDE', 'T6_HIDE'],
+            'leather': ['T4_LEATHER', 'T5_LEATHER', 'T6_LEATHER'],
+            'cloth': ['T4_CLOTH', 'T5_CLOTH', 'T6_CLOTH'],
+            'ore': ['T4_ORE', 'T5_ORE', 'T6_ORE'],
+            'metal': ['T4_METALBAR', 'T5_METALBAR', 'T6_METALBAR'],
+            'stone': ['T4_ROCK', 'T5_ROCK', 'T6_ROCK'],
+            'wood': ['T4_WOOD', 'T5_WOOD', 'T6_WOOD'],
+            'planks': ['T4_PLANKS', 'T5_PLANKS', 'T6_PLANKS'],
+            'plank': ['T4_PLANKS', 'T5_PLANKS', 'T6_PLANKS'],
             
-            // Resources - Logs
-            'rough logs': 'T2_WOOD',
-            'birch logs': 'T3_WOOD',
-            'chestnut logs': 'T4_WOOD',
-            'pine logs': 'T5_WOOD',
-            'cedar logs': 'T6_WOOD',
-            'bloodoak logs': 'T7_WOOD',
-            'ashenbark logs': 'T8_WOOD',
+            // Weapons
+            'sword': ['T4_SWORD', 'T5_SWORD', 'T6_SWORD', 'T7_SWORD', 'T8_SWORD'],
+            'axe': ['T4_AXE', 'T5_AXE', 'T6_AXE'],
+            'hammer': ['T4_HAMMER', 'T5_HAMMER', 'T6_HAMMER'],
+            'bow': ['T4_BOW', 'T5_BOW', 'T6_BOW'],
+            'crossbow': ['T4_CROSSBOW', 'T5_CROSSBOW', 'T6_CROSSBOW'],
+            'dagger': ['T4_DAGGER', 'T5_DAGGER', 'T6_DAGGER'],
+            'spear': ['T4_SPEAR', 'T5_SPEAR', 'T6_SPEAR'],
             
-            // Resources - Stone
-            'rough stone': 'T2_ROCK',
-            'limestone': 'T3_ROCK',
-            'sandstone': 'T4_ROCK',
-            'travertine': 'T5_ROCK',
-            'granite': 'T6_ROCK',
-            'slate': 'T7_ROCK',
-            'basalt': 'T8_ROCK',
-            
-            // Resources - Hide/Leather
-            'raw hide': 'T2_HIDE',
-            'scrapped hide': 'T3_HIDE',
-            'rugged hide': 'T4_HIDE',
-            'thick hide': 'T5_HIDE',
-            'resilient hide': 'T6_HIDE',
-            'robust hide': 'T7_HIDE',
-            'superior hide': 'T8_HIDE',
-            
-            // Weapons - Swords
-            'novice sword': 'T3_SWORD',
-            'adept sword': 'T4_SWORD',
-            'expert sword': 'T5_SWORD',
-            'master sword': 'T6_SWORD',
-            'grandmaster sword': 'T7_SWORD',
-            'elder sword': 'T8_SWORD',
-            
-            'broadsword': 'T4_SWORD',
-            'claymore': 'T4_2H_CLAYMORE',
-            'dual swords': 'T4_2H_DUALSWORD',
-            
-            // Weapons - Axes
-            'battle axe': 'T4_AXE',
-            'greataxe': 'T4_2H_AXE',
-            'halberd': 'T4_2H_HALBERD',
-            
-            // Weapons - Hammers
-            'war hammer': 'T4_HAMMER',
-            'great hammer': 'T4_2H_HAMMER',
-            'polehammer': 'T4_2H_POLEHAMMER',
-            
-            // Weapons - Bows
-            'bow': 'T4_BOW',
-            'warbow': 'T4_BOW_LONGBOW',
-            'crossbow': 'T4_CROSSBOW',
-            'heavy crossbow': 'T4_CROSSBOW_CANNON',
-            
-            // Armor - Cloth
-            'scholar cowl': 'T4_HEAD_CLOTH_SET1',
-            'scholar robe': 'T4_ARMOR_CLOTH_SET1',
-            'scholar sandals': 'T4_SHOES_CLOTH_SET1',
-            
-            // Armor - Leather  
-            'mercenary hood': 'T4_HEAD_LEATHER_SET1',
-            'mercenary jacket': 'T4_ARMOR_LEATHER_SET1',
-            'mercenary shoes': 'T4_SHOES_LEATHER_SET1',
-            
-            // Armor - Plate
-            'soldier helmet': 'T4_HEAD_PLATE_SET1',
-            'soldier armor': 'T4_ARMOR_PLATE_SET1',
-            'soldier boots': 'T4_SHOES_PLATE_SET1',
+            // Armor
+            'helmet': ['T4_HEAD_PLATE_SET1', 'T4_HEAD_LEATHER_SET1', 'T4_HEAD_CLOTH_SET1'],
+            'armor': ['T4_ARMOR_PLATE_SET1', 'T4_ARMOR_LEATHER_SET1', 'T4_ARMOR_CLOTH_SET1'],
+            'boots': ['T4_SHOES_PLATE_SET1', 'T4_SHOES_LEATHER_SET1', 'T4_SHOES_CLOTH_SET1'],
             
             // Consumables
-            'minor healing potion': 'T3_POTION_HEAL',
-            'healing potion': 'T4_POTION_HEAL',
-            'major healing potion': 'T5_POTION_HEAL',
-            'pork pie': 'T3_MEAL',
-            'goose pie': 'T4_MEAL',
-            'pork omelette': 'T5_MEAL',
+            'potion': ['T4_POTION_HEAL', 'T5_POTION_HEAL', 'T6_POTION_HEAL'],
+            'heal': ['T4_POTION_HEAL', 'T5_POTION_HEAL', 'T6_POTION_HEAL'],
+            'food': ['T4_MEAL', 'T5_MEAL', 'T6_MEAL'],
+            'bread': ['T3_BREAD', 'T4_BREAD', 'T5_BREAD'],
             
-            // Mount
-            'riding horse': 'T3_MOUNT_HORSE',
-            'armored horse': 'T4_MOUNT_HORSE',
-            'heavy war horse': 'T5_MOUNT_HORSE',
-            'ox': 'T4_MOUNT_OX',
-            'giant stag': 'T5_MOUNT_STAG',
+            // Mounts
+            'horse': ['T4_MOUNT_HORSE', 'T5_MOUNT_HORSE', 'T6_MOUNT_HORSE'],
+            'ox': ['T4_MOUNT_OX', 'T5_MOUNT_OX', 'T6_MOUNT_OX'],
+            'mount': ['T4_MOUNT_HORSE', 'T4_MOUNT_OX'],
             
-            // Premium
-            'premium': 'PREMIUM'
+            // Special
+            'premium': ['PREMIUM'],
+            'gold': ['GOLD'],
+            'silver': ['SILVER']
         };
-    }
-
-    findItemId(searchTerm) {
-        const itemDb = this.getItemDatabase();
-        const lowerTerm = searchTerm.toLowerCase();
         
-        // Try exact match first
-        if (itemDb[lowerTerm]) {
-            return itemDb[lowerTerm];
-        }
-        
-        // Try direct item ID
-        if (searchTerm.match(/^T[2-8]_/)) {
-            return searchTerm;
-        }
-        
-        return null;
-    }
-
-    findItemSuggestions(searchTerm) {
-        const itemDb = this.getItemDatabase();
-        const lowerTerm = searchTerm.toLowerCase();
-        const suggestions = [];
-        
-        // Find partial matches
-        for (const [name, id] of Object.entries(itemDb)) {
-            if (name.includes(lowerTerm)) {
-                suggestions.push({ name: name, id: id });
+        // Look for matches in common mappings
+        for (const [key, values] of Object.entries(commonMappings)) {
+            if (term.includes(key)) {
+                patterns.push(...values);
             }
         }
         
-        return suggestions.slice(0, 10); // Limit to 10 suggestions
+        // Generate tier-based patterns if we detect tier keywords
+        const tierMap = {
+            'novice': 'T3', 'adept': 'T4', 'expert': 'T5', 
+            'master': 'T6', 'grandmaster': 'T7', 'elder': 'T8'
+        };
+        
+        let detectedTier = null;
+        for (const [tierName, tierCode] of Object.entries(tierMap)) {
+            if (term.includes(tierName)) {
+                detectedTier = tierCode;
+                break;
+            }
+        }
+        
+        // If we detected a tier, try specific patterns
+        if (detectedTier) {
+            if (term.includes('sword')) patterns.push(`${detectedTier}_SWORD`);
+            if (term.includes('axe')) patterns.push(`${detectedTier}_AXE`);
+            if (term.includes('hammer')) patterns.push(`${detectedTier}_HAMMER`);
+            if (term.includes('bow')) patterns.push(`${detectedTier}_BOW`);
+            // Add more specific patterns as needed
+        }
+        
+        // If no patterns found, try the search term as-is (capitalized)
+        if (patterns.length === 0) {
+            patterns.push(term.toUpperCase().replace(/\s+/g, '_'));
+        }
+        
+        return patterns;
     }
+    
+    async handlePrice(interaction) {
+        const itemQuery = interaction.options.getString('item');
+        await interaction.deferReply();
+        
+        try {
+            const patterns = this.generateItemPatterns(itemQuery);
+            let foundData = null;
+            let usedPattern = null;
+            
+            // Try each pattern until we find market data
+            for (const pattern of patterns) {
+                const prices = await this.getItemPrices(pattern);
+                
+                // Check if we actually got market data (not all zeros)
+                const hasRealData = prices.some(p => p.sell_price_min > 0 || p.buy_price_max > 0);
+                
+                if (hasRealData) {
+                    foundData = prices;
+                    usedPattern = pattern;
+                    break;
+                }
+            }
+            
+            if (foundData) {
+                const embed = this.createPriceEmbed(`${itemQuery} (${usedPattern})`, foundData);
+                await interaction.editReply({ embeds: [embed] });
+            } else {
+                // No market data found, show helpful message
+                const embed = new EmbedBuilder()
+                    .setTitle('🔍 No Market Data Found')
+                    .setDescription(`No recent market data found for "${itemQuery}".`)
+                    .addFields(
+                        { name: 'Try These Examples:', value: '• `/price T4_SWORD`\n• `/price healing potion`\n• `/price hide`\n• `/price expert sword`\n• `/price premium`', inline: false },
+                        { name: 'Patterns Tried:', value: patterns.slice(0, 5).map(p => `\`${p}\``).join(', '), inline: false },
+                        { name: 'Tip:', value: 'Use exact item IDs (like `T4_SWORD`) for best results, or check https://www.albiononline2d.com/en/item', inline: false }
+                    )
+                    .setColor(0xff9900);
+                
+                await interaction.editReply({ embeds: [embed] });
+            }
+            
+        } catch (error) {
+            console.error('Price command error:', error);
+            await interaction.editReply('Error fetching price data');
+        }
 
     async getItemPrices(itemId, locations = ['Caerleon', 'Bridgewatch', 'Lymhurst', 'Martlock', 'Thetford', 'Fort Sterling']) {
         try {
