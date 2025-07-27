@@ -146,6 +146,7 @@ class AlbionCommands {
             console.error('Price command error:', error);
             await interaction.editReply('Error fetching price data');
         }
+    }
 
     async getItemPrices(itemId, locations = ['Caerleon', 'Bridgewatch', 'Lymhurst', 'Martlock', 'Thetford', 'Fort Sterling']) {
         try {
